@@ -6,9 +6,11 @@ on:
       repo_owner:
         description: 'Repository owner (e.g., bsimulator)'
         required: true
+        default: 'bsimulator'
       repo_name:
         description: 'Repository name (e.g., test-java-react-app)'
         required: true
+        default: 'test-java-react-app'
       pr_number:
         description: 'Pull request number'
         required: true
@@ -37,42 +39,59 @@ jobs:
           repository: ${{ inputs.repo_owner }}/${{ inputs.repo_name }}
           path: target-repo
           fetch-depth: 0
-          token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Get PR information
         id: pr-info
+        working-directory: target-repo
         run: |
-          cd target-repo
-          gh pr view ${{ inputs.pr_number }} --json baseRefName,headRefName > pr_info.json
-          cat pr_info.json
-          BASE_REF=$(jq -r '.baseRefName' pr_info.json)
-          HEAD_REF=$(jq -r '.headRefName' pr_info.json)
+          # Get PR details using GitHub API
+          PR_DATA=$(curl -s -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+            "https://api.github.com/repos/${{ inputs.repo_owner }}/${{ inputs.repo_name }}/pulls/${{ inputs.pr_number }}")
+          
+          BASE_REF=$(echo "$PR_DATA" | jq -r '.base.ref')
+          HEAD_SHA=$(echo "$PR_DATA" | jq -r '.head.sha')
+          BASE_SHA=$(echo "$PR_DATA" | jq -r '.base.sha')
+          
           echo "base_ref=$BASE_REF" >> $GITHUB_OUTPUT
-          echo "head_ref=$HEAD_REF" >> $GITHUB_OUTPUT
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          echo "head_sha=$HEAD_SHA" >> $GITHUB_OUTPUT
+          echo "base_sha=$BASE_SHA" >> $GITHUB_OUTPUT
+          
+          echo "Base: $BASE_REF ($BASE_SHA)"
+          echo "Head: $HEAD_SHA"
 
       - name: Generate PR diff
+        working-directory: target-repo
         run: |
-          cd target-repo
           git fetch origin ${{ steps.pr-info.outputs.base_ref }}
-          git fetch origin ${{ steps.pr-info.outputs.head_ref }}
-          git diff origin/${{ steps.pr-info.outputs.base_ref }}...origin/${{ steps.pr-info.outputs.head_ref }} > ../pr_diff.txt
-          echo "Diff generated, size:"
+          git diff ${{ steps.pr-info.outputs.base_sha }}..${{ steps.pr-info.outputs.head_sha }} > ../pr_diff.txt
+          echo "Diff generated, lines:"
           wc -l ../pr_diff.txt
+          echo "Preview:"
+          head -20 ../pr_diff.txt
 
       - name: Run Code Analyzer
         run: |
-          node analyzer.js pr_diff.txt > analysis_result.txt
-          cat analysis_result.txt
+          if [ -s pr_diff.txt ]; then
+            node analyzer.js pr_diff.txt > analysis_result.txt
+            echo "Analysis completed"
+            cat analysis_result.txt
+          else
+            echo "No diff found!"
+            exit 1
+          fi
 
       - name: Post Review Comment
         run: |
-          cd target-repo
-          REVIEW_BODY=$(cat ../analysis_result.txt)
+          REVIEW_BODY=$(cat analysis_result.txt)
           
-          echo "$REVIEW_BODY" > review_comment.md
+          # Escape quotes and newlines for JSON
+          REVIEW_JSON=$(echo "$REVIEW_BODY" | jq -Rs .)
           
-          gh pr comment ${{ inputs.pr_number }} --body-file review_comment.md
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Post comment using GitHub API
+          curl -X POST \
+            -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+            -H "Content-Type: application/json" \
+            -d "{\"body\": $REVIEW_JSON}" \
+            "https://api.github.com/repos/${{ inputs.repo_owner }}/${{ inputs.repo_name }}/issues/${{ inputs.pr_number }}/comments"
+          
+          echo "Review posted successfully!"
