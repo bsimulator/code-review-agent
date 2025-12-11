@@ -1,0 +1,78 @@
+name: External PR Review Agent
+
+on:
+  workflow_dispatch:
+    inputs:
+      repo_owner:
+        description: 'Repository owner (e.g., bsimulator)'
+        required: true
+      repo_name:
+        description: 'Repository name (e.g., test-java-react-app)'
+        required: true
+      pr_number:
+        description: 'Pull request number'
+        required: true
+        type: number
+
+permissions:
+  contents: read
+
+jobs:
+  review-external-pr:
+    runs-on: ubuntu-latest
+    name: Review External PR
+
+    steps:
+      - name: Checkout review agent
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+
+      - name: Checkout target repository
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ inputs.repo_owner }}/${{ inputs.repo_name }}
+          path: target-repo
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Get PR information
+        id: pr-info
+        run: |
+          cd target-repo
+          gh pr view ${{ inputs.pr_number }} --json baseRefName,headRefName > pr_info.json
+          cat pr_info.json
+          BASE_REF=$(jq -r '.baseRefName' pr_info.json)
+          HEAD_REF=$(jq -r '.headRefName' pr_info.json)
+          echo "base_ref=$BASE_REF" >> $GITHUB_OUTPUT
+          echo "head_ref=$HEAD_REF" >> $GITHUB_OUTPUT
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Generate PR diff
+        run: |
+          cd target-repo
+          git fetch origin ${{ steps.pr-info.outputs.base_ref }}
+          git fetch origin ${{ steps.pr-info.outputs.head_ref }}
+          git diff origin/${{ steps.pr-info.outputs.base_ref }}...origin/${{ steps.pr-info.outputs.head_ref }} > ../pr_diff.txt
+          echo "Diff generated, size:"
+          wc -l ../pr_diff.txt
+
+      - name: Run Code Analyzer
+        run: |
+          node analyzer.js pr_diff.txt > analysis_result.txt
+          cat analysis_result.txt
+
+      - name: Post Review Comment
+        run: |
+          cd target-repo
+          REVIEW_BODY=$(cat ../analysis_result.txt)
+          
+          echo "$REVIEW_BODY" > review_comment.md
+          
+          gh pr comment ${{ inputs.pr_number }} --body-file review_comment.md
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
