@@ -19,11 +19,6 @@ jobs:
         with:
           fetch-depth: 0
       
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: '18'
-      
       - name: Get PR diff
         id: diff
         run: |
@@ -35,42 +30,21 @@ jobs:
       - name: Run Code Analyzer
         id: analyze
         run: |
-          chmod +x ./analyzer.js
-          node ./analyzer.js pr_diff.txt > analysis_result.txt
+          chmod +x ./analyzer.sh
+          ./analyzer.sh pr_diff.txt > analysis_result.txt
           cat analysis_result.txt
       
-      - name: AI Code Review
-        uses: anc95/ChatGPT-CodeReview@main
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-          OPENAI_API_ENDPOINT: https://api.openai.com/v1
-          MODEL: gpt-4-turbo-preview
-          PROMPT: |
-            You are reviewing Java and React code. Focus on:
+      - name: Post Analysis Comment
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const fs = require('fs');
+            const analysis = fs.readFileSync('analysis_result.txt', 'utf8');
             
-            **Java:**
-            - NullPointerException risks
-            - Resource leaks (unclosed connections, streams)
-            - Thread safety issues
-            - Exception handling
-            - Memory leaks
-            - Best practices (logging, not System.out)
-            
-            **React:**
-            - Hooks rules violations
-            - Missing key props in lists
-            - State mutations
-            - useEffect dependency issues
-            - Component lifecycle issues
-            - Performance concerns (unnecessary re-renders)
-            
-            **General:**
-            - Security vulnerabilities
-            - Logic errors and bugs
-            - Code quality and maintainability
-            
-            Provide specific, actionable feedback with examples.
-          top_p: 1
-          temperature: 0.3
-          max_tokens: 3000
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: '## 🤖 Automated Code Review\n\n' + analysis
+            });
